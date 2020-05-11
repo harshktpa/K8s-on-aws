@@ -189,8 +189,7 @@ $ BASTION_SG_ID=$(aws ec2 create-security-group --group-name ssh-bastion  --desc
 
 - bootstrap the cluster
     sudo kubeadm init --config=kubeadm.yaml
-
-
-
-
+````
+- referenece
+https://www.linuxschoolonline.com/how-to-set-up-kubernetes-1-16-on-aws-from-scratch/
 
