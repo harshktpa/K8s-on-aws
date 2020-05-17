@@ -37,18 +37,18 @@ $ echo $PUBLIC_ROUTE_TABLE_ID
 ```
 - taging routetable
 ```
-aws ec2 create-tags --resources $PUBLIC_ROUTE_TABLE_ID --tags Key=Name,Value=lso-public
-$ aws ec2 create-tags --resources $PRIVATE_ROUTE_TABLE_ID --tags Key=Name,Value=lso-private
+aws ec2 create-tags --resources $PUBLIC_ROUTE_TABLE_ID --tags Key=Name,Value=k8s-public
+$ aws ec2 create-tags --resources $PRIVATE_ROUTE_TABLE_ID --tags Key=Name,Value=k8s-private
 ```
 - creating subnets 
 ```
-$ PRIVATE_SUBNET_ID=$(aws ec2 create-subnet --vpc-id $VPCID --availability-zone us-west-2a --cidr-block 10.0.0.0/20 --query "Subnet.SubnetId" --output text)
+$ PRIVATE_SUBNET_ID=$(aws ec2 create-subnet --vpc-id $VPCID --availability-zone us-east-2a --cidr-block 10.0.0.0/20 --query "Subnet.SubnetId" --output text)
 $ echo $PRIVATE_SUBNET_ID
 $ PUBLIC_SUBNET_ID=$(aws ec2 create-subnet --vpc-id $VPCID --availability-zone us-east-2a --cidr-block 10.0.16.0/20 --query "Subnet.SubnetId" --output text)
 
 - taging subnet
     $ aws ec2 create-tags --resources $PRIVATE_SUBNET_ID --tags Key=Name,Value=k8s-private-1a Key=kubernetes.io/cluster/k8s,Value=owned Key=kubernetes.io/role/internal-elb,Value=1
-    $ aws ec2 create-tags --resources $PUBLIC_SUBNET_ID --tags Key=Name,Value=lso-public-1a Key=kubernetes.io/cluster/k8s,Value=owned  Key=kubernetes.io/role/elb,Value=1
+    $ aws ec2 create-tags --resources $PUBLIC_SUBNET_ID --tags Key=Name,Value=k8s-public-1a Key=kubernetes.io/cluster/k8s,Value=owned  Key=kubernetes.io/role/elb,Value=1
 
 - asscosiating route table to subnet 
     $ aws ec2 associate-route-table --subnet-id $PUBLIC_SUBNET_ID --route-table-id $PUBLIC_ROUTE_TABLE_ID
@@ -81,7 +81,7 @@ $ BASTION_SG_ID=$(aws ec2 create-security-group --group-name ssh-bastion  --desc
 
 - creating instance aka bastion virtualmachine
     $ export UBUNTU_AMI_ID=ami-03ffa9b61e8d2cfda
-    $ BASTION_ID=$(aws ec2 run-instances --image-id $UBUNTU_AMI_ID --instance-type t2.micro     --key-name k8s --security-group-ids  $BASTION_SG_ID --subnet-id $PUBLIC_SUBNET_ID   --associate-public-ip-address --query "Instances[0].InstanceId" --output text)
+    $ BASTION_ID=$(aws ec2 run-instances --image-id $UBUNTU_AMI_ID --instance-type t3.micro     --key-name k8s --security-group-ids  $BASTION_SG_ID --subnet-id $PUBLIC_SUBNET_ID   --associate-public-ip-address --query "Instances[0].InstanceId" --output text)
 
 - add tga to bastion vm
     $ aws ec2 create-tags --resources $BASTION_ID --tags Key=Name,Value=ssh-bastion
@@ -123,7 +123,7 @@ $ BASTION_SG_ID=$(aws ec2 create-security-group --group-name ssh-bastion  --desc
 - authorize-security-group-ingress 
     $ aws ec2 authorize-security-group-ingress --group-id $K8S_AMI_SG_ID --protocol tcp --port 22 --source-group $BASTION_SG_ID
 - create the instance 
-    $K8S_AMI_INSTANCE_ID=$(aws ec2 run-instances --subnet-id $PRIVATE_SUBNET_ID --image-id $UBUNTU_AMI_ID --instance-type t3.micro --key-name lso --security-group-ids $K8S_AMI_SG_ID --query "Instances[0].InstanceId" --output text)
+    $K8S_AMI_INSTANCE_ID=$(aws ec2 run-instances --subnet-id $PRIVATE_SUBNET_ID --image-id $UBUNTU_AMI_ID --instance-type t3.micro --key-name k8s --security-group-ids $K8S_AMI_SG_ID --query "Instances[0].InstanceId" --output text)
 
 - tag insatance
     $ aws ec2 create-tags --resources $K8S_AMI_INSTANCE_ID --tags Key=Name,Value=kubernetes-node-ami
@@ -176,7 +176,7 @@ $ BASTION_SG_ID=$(aws ec2 create-security-group --group-name ssh-bastion  --desc
     $ K8S_MASTER_INSTANCE_ID=$(aws ec2 run-instances --private-ip-address 10.0.0.10 --subnet-id $PRIVATE_SUBNET_ID --image-id $K8S_AMI_ID --instance-type t3.medium --key-name k8s --security-group-ids $K8S_MASTER_SG_ID --iam-instance-profile Name=k8s-cluster-iam-master-Instance-Profile --query "Instances[0].InstanceId" --output text)
 
 - Add tags
-    $ aws ec2 create-tags --resources $K8S_AMI_INSTANCE_ID --tags Key=Name,Value=kubernetes-node-ami
+    $ aws ec2 create-tags --resources $K8S_MASTER_INSTANCE_ID --tags Key=Name,Value=k8s-k8s-master Key=kubernetes.io/cluster/k8s,Value=owned
 
 - Grab the private IP 
     $ K8S_AMI_IP=$(aws ec2 describe-instances --instance-ids $K8S_AMI_INSTANCE_ID --query "Reservations[0].Instances[0].PrivateIpAddress" --output text)
@@ -189,7 +189,101 @@ $ BASTION_SG_ID=$(aws ec2 create-security-group --group-name ssh-bastion  --desc
 
 - bootstrap the cluster
     sudo kubeadm init --config=kubeadm.yaml
+
+-apply kubernetes network plugin
+    kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')"
 ````
+- Enabling API access from your workstation
+```
+- configure the security group to allow access to the API server 
+    $ aws ec2 authorize-security-group-ingress --group-id $K8S_MASTER_SG_ID --protocol tcp --port 6443 --source-group $BASTION_SG_ID
+
+- enable communication between workstation and Kubernetes master
+    sshuttle -D --dns -r ubuntu@52.12.189.248 10.0.0.0/16
+
+- Download the kubeconfig file from the master node
+    scp -i k8s.pem ubuntu@10.0.0.10:~/.kube/config .
+
+```
+- Adding a worker node
+```
+- Create security group  for worker node
+    K8S_NODES_SG_ID=$(aws ec2 create-security-group --group-name k8s-nodes --description "Kubernetes Nodes" --vpc-id $VPCID --query GroupId --output text)
+
+- Enable SSH access from the bastion server
+    aws ec2 authorize-security-group-ingress --group-id $K8S_NODES_SG_ID --protocol tcp --port 22 --source-group $BASTION_SG_ID
+
+- Worker nodes will need access to the API server on the master node
+    aws ec2 authorize-security-group-ingress --group-id $K8S_MASTER_SG_ID --protocol tcp --port 6443 --source-group $K8S_NODES_SG_ID
+
+- Workers to be able to access the DNS addon on the master node:
+    aws ec2 authorize-security-group-ingress --group-id $K8S_MASTER_SG_ID --protocol all --port 53 --source-group $K8S_NODES_SG_ID
+
+- Enable kubelete access from worker nodes for master node 
+    aws ec2 authorize-security-group-ingress --group-id $K8S_NODES_SG_ID --protocol tcp --port 10250 --source-group $K8S_MASTER_SG_ID 
+    aws ec2 authorize-security-group-ingress --group-id $K8S_NODES_SG_ID --protocol tcp --port 10255 --source-group $K8S_MASTER_SG_ID
+
+- Pod intercommunication:
+    aws ec2 authorize-security-group-ingress --group-id $K8S_NODES_SG_ID --protocol all --port -1 --source-group $K8S_NODES_SG_ID
+```
+
+- user_data.sh 
+```
+#!/bin/bash
+set -exuo pipefail
+hostnamectl set-hostname $(curl http://169.254.169.254/latest/meta-data/hostname)
+cat <<EOT > /etc/systemd/system/kubelet.service.d/20-aws.conf
+[Service]
+<!-- Environment="KUBELET_EXTRA_ARGS=--cloud-provider=aws --node-ip=$(curl http://169.254.169.254/latest/meta-data/local-ipv4) --node-labels=node-role.kubernetes.io/node" -->
+EOT
+systemctl daemon-reload
+systemctl restart kubelet
+kubeadm join 10.0.0.10:6443 --token hi56rz.95jbaj3x820lyrrz \
+    --discovery-token-ca-cert-hash sha256:20ddd0cc5fe3e0e228af4082c140e07ce0af295b9a95e80cb7e27142adecf27d 
+```
+- Auto Scaling configuration template
+```
+$ aws autoscaling create-launch-configuration --launch-configuration-name k8s-node-1.16.2-t3-medium-001 --image-id $K8S_AMI_ID --key-name k8s --security-groups $K8S_NODES_SG_ID --user-data file://user_data.sh --instance-type t3.medium --iam-instance-profile k8s-cluster-iam-master-Instance-Profile --no-associate-public-ip-address
+```
+
+- Deploying a sample application
+```
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+ name: frontend
+ labels:
+   app: frontend
+spec:
+ replicas: 3
+ selector:
+   matchLabels:
+     app: frontend
+ template:
+   metadata:
+     labels:
+       app: frontend
+   spec:
+     containers:
+     - name: app
+       image: nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+ name: frontend-svc
+spec:
+ selector:
+   app: frontend
+ ports:
+ - name: http
+   port: 80
+   targetPort: 80
+   protocol: TCP
+ type: LoadBalancer
+ ```
+
 - referenece
 https://www.linuxschoolonline.com/how-to-set-up-kubernetes-1-16-on-aws-from-scratch/
 
