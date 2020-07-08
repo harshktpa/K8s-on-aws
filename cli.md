@@ -1,3 +1,4 @@
+```
 aws configure
 aws iam list-users | jq
 aws ec2 create-security-group --group-name k8s-aws --description "to deploy k8s on aws" --vpc-id vpc-70b0bb19
@@ -7,7 +8,7 @@ aws ec2 run-instances --image-id ami-03ffa9b61e8d2cfda --count 1 --instance-type
 
 terminating ec2 instance
 aws ec2 terminate-instances --instance-ids i-0891676bc46a3ad35
-
+```
 
 Ready to go 
 
